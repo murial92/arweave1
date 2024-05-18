@@ -1,0 +1,143 @@
+-- Initializing global variables for game state and action status.
+gs = gs or nil
+actionInProgress = actionInProgress or false
+logs = logs or {}
+
+-- Color codes for console output.
+colors = {
+    r = "\27[31m",
+    g = "\27[32m",
+    b = "\27[34m",
+    reset = "\27[0m",
+    gray = "\27[90m"
+}
+
+-- Handler to print game updates and manage game state.
+gameHandler = function(msg)
+    if msg.Event == "Started-Waiting-Period" then
+        sendAction({ Target = ao.id, Action = "AutoPay" })
+    elseif (msg.Event == "Tick" or msg.Event == "Started-Game") and not actionInProgress then
+        actionInProgress = true
+        sendAction({ Target = Game, Action = "GetGameState" })
+    elseif actionInProgress then
+        print("Waiting for previous action to complete...")
+    end
+    print(colors.g .. msg.Event .. ": " .. msg.Data .. colors.reset)
+end
+
+-- Handler to trigger game state updates.
+tickHandler = function()
+    if not actionInProgress then
+        actionInProgress = true
+        print(colors.gray .. "Updating game state..." .. colors.reset)
+        sendAction({ Target = Game, Action = "GetGameState" })
+    else
+        print("Waiting for previous action to complete...")
+    end
+end
+
+-- Handler to automate payment confirmation.
+autoPayHandler = function(msg)
+    print("Auto-paying fees...")
+    sendAction({ Target = Game, Action = "Transfer", Recipient = Game, Quantity = "1000" })
+end
+
+-- Handler to update game state upon receiving data.
+updateGameStateHandler = function(msg)
+    local json = require("json")
+    gs = json.decode(msg.Data)
+    sendAction({ Target = ao.id, Action = "UpdatedGameState" })
+    print("Game state updated. Use 'gs' to view.")
+    print("Energy: " .. gs.Players[ao.id].energy)
+end
+
+-- Handler to decide the next action.
+nextActionHandler = function()
+    if gs.GameMode ~= "Playing" then
+        print("Game not started.")
+        actionInProgress = false
+        return
+    end
+    print("Determining next action...")
+    local me = gs.Players[ao.id]
+    local weakestOpponent = findWeakestOpponent()
+
+    if weakestOpponent and me.energy > 0 then
+        local distanceToOpponent = calculateDistance(me.x, me.y, weakestOpponent.x, weakestOpponent.y)
+        if distanceToOpponent <= 1 then
+            print("Attacking weakest opponent.")
+            sendAction({ Target = Game, Action = "PlayerAttack", Player = ao.id, AttackEnergy = tostring(me.energy * 0.5) })
+        else
+            print("Moving towards weakest opponent.")
+            local direction = decideDirection(me, weakestOpponent)
+            sendAction({ Target = Game, Action = "PlayerMove", Player = ao.id, Direction = direction })
+        end
+    else
+        print("No weak opponent found or out of energy. Skipping turn.")
+        sendAction({ Target = ao.id, Action = "Tick" })
+    end
+end
+
+-- Handler to return attack when hit by another player.
+returnAttackHandler = function(msg)
+    if not actionInProgress then
+        actionInProgress = true
+        local playerEnergy = gs.Players[ao.id].energy
+        if playerEnergy == nil then
+            print(colors.r .. "Unable to read energy." .. colors.reset)
+            sendAction({ Target = Game, Action = "Attack-Failed", Reason = "Unable to read energy." })
+        elseif playerEnergy == 0 then
+            print(colors.r .. "Player has insufficient energy." .. colors.reset)
+            sendAction({ Target = Game, Action = "Attack-Failed", Reason = "Player has no energy." })
+        else
+            print(colors.r .. "Returning attack." .. colors.reset)
+            sendAction({ Target = Game, Action = "PlayerAttack", Player = ao.id, AttackEnergy = tostring(playerEnergy * 0.4) })
+        end
+        actionInProgress = false
+        sendAction({ Target = ao.id, Action = "Tick" })
+    else
+        print("Waiting for previous action to complete...")
+    end
+end
+
+-- Function to find the weakest opponent.
+findWeakestOpponent = function()
+    local weakestOpponent = nil
+    local minHealth = math.huge
+
+    for target, state in pairs(gs.Players) do
+        if target ~= ao.id then
+            if state.health < minHealth then
+                weakestOpponent = state
+                minHealth = state.health
+            end
+        end
+    end
+
+    return weakestOpponent
+end
+
+-- Function to calculate distance between two points.
+calculateDistance = function(x1, y1, x2, y2)
+    return math.sqrt((x2 - x1)^2 + (y2 - y1)^2)
+end
+
+-- Function to decide direction towards weakest opponent.
+decideDirection = function(player, opponent)
+    local dx = opponent.x - player.x
+    local dy = opponent.y - player.y
+
+    if math.abs(dx) > math.abs(dy) then
+        if dx > 0 then
+            return "Right"
+        else
+            return "Left"
+        end
+    else
+        if dy > 0 then
+            return "Down"
+        else
+            return "Up"
+        end
+    end
+end
